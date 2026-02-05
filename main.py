@@ -1,17 +1,25 @@
+#!/usr/bin/env python3
+"""
+Virtual Floating Car – Kandy Traffic Monitor
+Splits roads into ≤5m segments, runs both directions, saves per-segment speed
+"""
+
 import asyncio
 import csv
-import re
+import math
 import time
 from datetime import datetime
 from pathlib import Path
+
 from playwright.async_api import async_playwright
+from roads import ROADS  # import your roads.py with 5 roads
 
 # ---------------- CONFIG ----------------
-SEGMENT_FILE = Path("kandy_segments.csv")
-DATA_DIR = Path("data/journeys")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-MAX_RETRIES = 2
+SEGMENT_FILE = Path("segments/kandy_segments.csv")
+SEGMENT_FILE.parent.mkdir(exist_ok=True)
+
+DATA_FILE = Path("kandy_segment_traffic.csv")
 
 CSV_HEADERS = [
     "timestamp_utc",
@@ -27,12 +35,33 @@ CSV_HEADERS = [
     "status",
 ]
 
+MAX_RETRIES = 2
+
+# ---------------- UTILITIES ----------------
+
+def haversine(lat1, lng1, lat2, lng2):
+    """Calculate distance in km between two points"""
+    R = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+def interpolate_points(lat1, lng1, lat2, lng2, max_dist_m=5):
+    """Interpolate points between two coordinates for ≤ max_dist_m"""
+    total_dist = haversine(lat1, lng1, lat2, lng2) * 1000  # m
+    steps = max(1, int(total_dist / max_dist_m))
+    points = [
+        (lat1 + (lat2 - lat1) * i / steps, lng1 + (lng2 - lng1) * i / steps)
+        for i in range(steps + 1)
+    ]
+    return points
+
 # ---------------- SEGMENTS ----------------
+
 def generate_segments():
-    """
-    Generate road segments if not exist.
-    Here, just dummy example segments, normally you'd grid Kandy area or follow roads.
-    """
+    """Generate or load road segments (≤5m)"""
     if SEGMENT_FILE.exists():
         print(f"[Segments] Loaded existing segments ({SEGMENT_FILE})")
         segments = []
@@ -42,63 +71,56 @@ def generate_segments():
                 segments.append(row)
         return segments
 
-    print("[Segments] Creating new segments...")
+    print("[Segments] Creating new 5m segments...")
     segments = []
     segment_id = 1
-    # Example: 4 segments, normally you'd split Kandy roads into 5m chunks
-    coords = [
-        ((6.980032, 79.875507), (6.943065, 79.878269)),
-        ((6.943065, 79.878269), (6.895575, 79.854851)),
-        ((6.943065, 79.878269), (6.910838, 79.887858)),
-        ((6.943065, 79.878269), (6.931424, 79.842208)),
-    ]
-    for start, end in coords:
-        segments.append({
-            "segment_id": str(segment_id),
-            "start_lat": start[0],
-            "start_lng": start[1],
-            "end_lat": end[0],
-            "end_lng": end[1],
-        })
-        segment_id += 1
+    for road_name, points in ROADS.items():
+        # forward direction
+        for i in range(len(points) - 1):
+            interp = interpolate_points(*points[i], *points[i + 1])
+            for j in range(len(interp) - 1):
+                segments.append({
+                    "segment_id": str(segment_id),
+                    "start_lat": interp[j][0],
+                    "start_lng": interp[j][1],
+                    "end_lat": interp[j+1][0],
+                    "end_lng": interp[j+1][1],
+                })
+                segment_id += 1
+        # reverse direction
+        rev_points = list(reversed(points))
+        for i in range(len(rev_points) - 1):
+            interp = interpolate_points(*rev_points[i], *rev_points[i + 1])
+            for j in range(len(interp) - 1):
+                segments.append({
+                    "segment_id": str(segment_id),
+                    "start_lat": interp[j][0],
+                    "start_lng": interp[j][1],
+                    "end_lat": interp[j+1][0],
+                    "end_lng": interp[j+1][1],
+                })
+                segment_id += 1
 
-    # Save segments for future runs
+    SEGMENT_FILE.parent.mkdir(exist_ok=True)
     with open(SEGMENT_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=segments[0].keys())
         writer.writeheader()
         writer.writerows(segments)
+
     print(f"[Segments] Saved {len(segments)} segments → {SEGMENT_FILE}")
     return segments
 
-# ---------------- PARSERS ----------------
-def parse_time_minutes(text: str):
-    h = re.search(r"(\d+)\s*h", text)
-    m = re.search(r"(\d+)\s*min", text)
-    total = 0
-    if h:
-        total += int(h.group(1)) * 60
-    if m:
-        total += int(m.group(1))
-    return total if total > 0 else None
-
-def parse_distance_km(text: str):
-    km = re.search(r"([\d.]+)\s*km", text)
-    m = re.search(r"([\d.]+)\s*m\b", text)
-    if km:
-        return float(km.group(1))
-    if m:
-        return float(m.group(1)) / 1000
-    return None
-
 # ---------------- SCRAPER ----------------
-async def scrape_segment(page, segment):
-    start_time = time.time()
-    url = f"https://www.google.com/maps/dir/{segment['start_lat']},{segment['start_lng']}/{segment['end_lat']},{segment['end_lng']}/"
 
-    print(f"[GoogleMaps] 🌐 {url}")
+async def scrape_segment(page, seg):
+    start_time = time.time()
     result = {
         "timestamp_utc": datetime.utcnow().isoformat(),
-        **segment,
+        "segment_id": seg["segment_id"],
+        "start_lat": seg["start_lat"],
+        "start_lng": seg["start_lng"],
+        "end_lat": seg["end_lat"],
+        "end_lng": seg["end_lng"],
         "time_min": None,
         "distance_km": None,
         "avg_speed_kmh": None,
@@ -106,60 +128,68 @@ async def scrape_segment(page, segment):
         "status": "failed",
     }
 
+    url = f"https://www.google.com/maps/dir/{seg['start_lat']},{seg['start_lng']}/{seg['end_lat']},{seg['end_lng']}/"
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(3000)
+
             content = await page.inner_text("div[role='main']")
 
-            t_match = re.search(r"\d+\s*(?:h\s*)?\d*\s*min", content)
-            d_match = re.search(r"[\d.]+\s*(?:km|m)\b", content)
-
+            # extract time
+            import re
+            t_match = re.search(r"(\d+\s*h)?\s*(\d+\s*min)?", content)
+            d_match = re.search(r"([\d.]+)\s*km", content)
             if t_match and d_match:
-                result["time_min"] = parse_time_minutes(t_match.group(0))
-                result["distance_km"] = parse_distance_km(d_match.group(0))
-                if result["time_min"] and result["distance_km"]:
-                    result["avg_speed_kmh"] = round(result["distance_km"] / (result["time_min"] / 60), 2)
+                h = int(re.search(r"(\d+)\s*h", t_match.group(0)).group(1)) if re.search(r"(\d+)\s*h", t_match.group(0)) else 0
+                m = int(re.search(r"(\d+)\s*min", t_match.group(0)).group(1)) if re.search(r"(\d+)\s*min", t_match.group(0)) else 0
+                total_min = h*60 + m
+                result["time_min"] = total_min
+                result["distance_km"] = float(d_match.group(1))
+                if total_min > 0:
+                    result["avg_speed_kmh"] = round(result["distance_km"] / (total_min / 60), 2)
                     result["status"] = "success"
-                    break
+            break
         except Exception as e:
-            print(f"  ❌ Attempt {attempt} failed: {e}")
+            if attempt == MAX_RETRIES:
+                result["status"] = f"error: {str(e)[:40]}"
+            await page.wait_for_timeout(2000)
 
     result["process_time_sec"] = round(time.time() - start_time, 2)
-    print(f"[Segment] ID {segment['segment_id']} processed → {result['status']} ({result['process_time_sec']}s)")
-
-    # Save JSON-like output for reference (optional)
-    date_path = DATA_DIR / datetime.utcnow().strftime("%Y/%m%d/%Y%m%d.%H%M%S.json")
-    date_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(date_path, "w", encoding="utf-8") as f:
-        import json
-        json.dump(result, f, ensure_ascii=False, indent=2)
-    print(f"[Journey] Wrote {date_path} ({date_path.stat().st_size} B)")
-
+    print(f"[Segment {seg['segment_id']}] {result['status']} ({result['process_time_sec']}s)")
     return result
 
 # ---------------- MAIN ----------------
+
 async def main():
     segments = generate_segments()
     results = []
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        for segment in segments:
-            results.append(await scrape_segment(page, segment))
-            await asyncio.sleep(1)  # optional pacing
+        context = await browser.new_context(
+            viewport={"width":1280,"height":800}, locale="en-US", timezone_id="Asia/Colombo"
+        )
+        page = await context.new_page()
+
+        for idx, seg in enumerate(segments, 1):
+            print(f"\n[{idx}/{len(segments)}] Processing segment {seg['segment_id']}")
+            res = await scrape_segment(page, seg)
+            results.append(res)
+
         await browser.close()
 
-    # Append results to CSV
-    csv_file = Path("kandy_segment_speeds.csv")
-    file_exists = csv_file.exists()
-    with open(csv_file, "a", newline="", encoding="utf-8") as f:
+    # Append to CSV
+    file_exists = DATA_FILE.exists()
+    with open(DATA_FILE, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
         if not file_exists:
             writer.writeheader()
-        writer.writerows(results)
-    print(f"\n[CSV] Saved {len(results)} rows → {csv_file}")
+        for r in results:
+            writer.writerow(r)
+
+    print(f"\nSaved {len(results)} rows → {DATA_FILE}")
 
 if __name__ == "__main__":
     asyncio.run(main())

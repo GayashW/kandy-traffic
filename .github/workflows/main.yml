@@ -1,5 +1,4 @@
 name: Kandy Traffic Monitor
-
 on:
   schedule:
     - cron: "*/30 * * * *" # run every 30 minutes

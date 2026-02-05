@@ -1,77 +1,127 @@
 import time
-import pandas as pd
+import csv
 import os
 from datetime import datetime
-from playwright.sync_api import sync_playwright
 
-ROUTES = [
-    {"name": "Peradeniya_to_KMTT", "origin": "Peradeniya, Kandy", "dest": "KMTT, Kandy"},
-    {"name": "Katugastota_to_KMTT", "origin": "Katugastota, Kandy", "dest": "KMTT, Kandy"},
-    {"name": "KMTT_to_Getambe", "origin": "KMTT, Kandy", "dest": "Getambe, Kandy"}
+import pandas as pd
+import numpy as np
+
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
+OUTPUT_FILE = "kandy_od_traffic.csv"
+
+# Example Origin–Destination pairs (URL encoded automatically by Google)
+OD_PAIRS = [
+    ("Peradeniya, Sri Lanka", "Kandy Municipal Town Hall, Sri Lanka"),
+    ("Katugastota, Sri Lanka", "Kandy Railway Station, Sri Lanka"),
 ]
 
-def scrape_traffic():
-    start_job = time.time()
-    results = []
-    
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
+
+def accept_google_consent(page):
+    """
+    Handles Google's consent / cookies popup if present.
+    This is critical for headless CI environments.
+    """
+    try:
+        page.wait_for_selector("button:has-text('Accept all')", timeout=5000)
+        page.click("button:has-text('Accept all')")
+        page.wait_for_timeout(2000)
+    except PlaywrightTimeoutError:
+        pass  # Consent dialog not shown
+
+
+def scrape_od_pair(page, origin, destination):
+    """
+    Scrape ETA and distance from Google Maps Directions.
+    """
+    start_time = time.time()
+
+    url = f"https://www.google.com/maps/dir/{origin}/{destination}/"
+    page.goto(url, timeout=60000)
+
+    accept_google_consent(page)
+
+    # Wait for directions panel to fully load
+    page.wait_for_selector("div#section-directions-trip-0", timeout=60000)
+
+    # Time in traffic (e.g., "45 min")
+    time_text = page.locator(
+        "div#section-directions-trip-0 span.section-directions-trip-duration"
+    ).inner_text()
+
+    # Distance (e.g., "14.2 km")
+    distance_text = page.locator(
+        "div#section-directions-trip-0 div.section-directions-trip-distance"
+    ).inner_text()
+
+    # Parse numbers
+    minutes = float(time_text.replace("min", "").strip())
+    km = float(distance_text.replace("km", "").strip())
+
+    avg_speed_kmh = round(km / (minutes / 60), 2)
+
+    process_time_sec = round(time.time() - start_time, 2)
+
+    return {
+        "timestamp_utc": datetime.utcnow().isoformat(),
+        "origin": origin,
+        "destination": destination,
+        "eta_min": minutes,
+        "distance_km": km,
+        "avg_speed_kmh": avg_speed_kmh,
+        "process_time_sec": process_time_sec,
+    }
+
+
+def main():
+    records = []
+
     with sync_playwright() as p:
-        # User agent is critical to prevent Google from showing the 'Lite' map or consent popups
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
         )
+
+        context = browser.new_context(
+            user_agent=USER_AGENT,
+            viewport={"width": 1280, "height": 800},
+            locale="en-US",
+        )
+
         page = context.new_page()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        for route in ROUTES:
-            start_route = time.time()
-            # Standard Directions URL
-            url = f"https://www.google.com/maps/dir/{route['origin']}/{route['dest']}/"
-            
+        for origin, destination in OD_PAIRS:
             try:
-                # Use a longer timeout and wait for load
-                page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                
-                # Handling the 'Consent' popup if it appears (common in some regions)
-                if "consent.google.com" in page.url:
-                    page.get_by_role("button", name="Accept all").click()
-                
-                # Wait for the specific duration element
-                # Selector: Looks for the primary time estimate in the sidebar
-                page.wait_for_selector('div[id="section-directions-trip-0"]', timeout=30000)
-                
-                duration_text = page.locator('div#section-directions-trip-0 >> text=/min|hr/').first.inner_text()
-                distance_text = page.locator('div#section-directions-trip-0 >> text=/km/').first.inner_text()
-
-                mins = int(''.join(filter(str.isdigit, duration_text.split('hr')[-1])))
-                if 'hr' in duration_text:
-                    mins += int(duration_text.split('hr')[0].strip()) * 60
-                
-                kms = float(''.join(c for c in distance_text if c.isdigit() or c == '.'))
-                speed = round(kms / (mins / 60), 2)
-
-                results.append({
-                    "timestamp": timestamp,
-                    "route": route['name'],
-                    "eta_min": mins,
-                    "dist_km": kms,
-                    "speed_kmh": speed,
-                    "proc_sec": round(time.time() - start_route, 2)
-                })
-                print(f"✅ {route['name']}: {mins}m")
-
+                data = scrape_od_pair(page, origin, destination)
+                records.append(data)
             except Exception as e:
-                print(f"❌ {route['name']} failed.")
+                print(f"ERROR scraping {origin} -> {destination}: {e}")
 
         browser.close()
-    
-    if results:
-        df = pd.DataFrame(results)
-        file_path = 'kandy_od_traffic.csv'
-        df.to_csv(file_path, mode='a', index=False, header=not os.path.exists(file_path))
-    else:
-        # Create empty file so Git doesn't fail
-        open('kandy_od_traffic.csv', 'a').close()
+
+    if not records:
+        print("No data collected — exiting.")
+        return
+
+    df = pd.DataFrame(records)
+
+    if os.path.exists(OUTPUT_FILE):
+        df_existing = pd.read_csv(OUTPUT_FILE)
+        df = pd.concat([df_existing, df], ignore_index=True)
+
+    df.to_csv(OUTPUT_FILE, index=False)
+    print(f"Saved {len(records)} new records to {OUTPUT_FILE}")
+
 
 if __name__ == "__main__":
-    scrape_traffic()
+    main()

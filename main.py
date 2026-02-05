@@ -10,6 +10,7 @@ import math
 import time
 from datetime import datetime
 from pathlib import Path
+import re
 
 from playwright.async_api import async_playwright
 from roads import ROADS  # import your roads.py with 5 roads
@@ -36,11 +37,12 @@ CSV_HEADERS = [
 ]
 
 MAX_RETRIES = 2
+MAX_SEGMENT_DISTANCE_M = 5  # max length per segment
 
 # ---------------- UTILITIES ----------------
 
 def haversine(lat1, lng1, lat2, lng2):
-    """Calculate distance in km between two points"""
+    """Distance in km between two points"""
     R = 6371.0
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
@@ -48,58 +50,38 @@ def haversine(lat1, lng1, lat2, lng2):
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-def interpolate_points(lat1, lng1, lat2, lng2, max_dist_m=5):
-    """Interpolate points between two coordinates for ≤ max_dist_m"""
-    total_dist = haversine(lat1, lng1, lat2, lng2) * 1000  # m
-    steps = max(1, int(total_dist / max_dist_m))
-    points = [
-        (lat1 + (lat2 - lat1) * i / steps, lng1 + (lng2 - lng1) * i / steps)
-        for i in range(steps + 1)
-    ]
-    return points
+def interpolate_points(lat1, lng1, lat2, lng2, max_dist_m=MAX_SEGMENT_DISTANCE_M):
+    """Interpolate points so consecutive points are ≤ max_dist_m"""
+    total_dist_m = haversine(lat1, lng1, lat2, lng2) * 1000
+    steps = max(1, int(total_dist_m / max_dist_m))
+    return [(lat1 + (lat2 - lat1) * i / steps, lng1 + (lng2 - lng1) * i / steps) for i in range(steps + 1)]
 
 # ---------------- SEGMENTS ----------------
 
 def generate_segments():
-    """Generate or load road segments (≤5m)"""
+    """Create/load segments CSV (≤5m) for all roads"""
     if SEGMENT_FILE.exists():
         print(f"[Segments] Loaded existing segments ({SEGMENT_FILE})")
-        segments = []
         with open(SEGMENT_FILE, "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                segments.append(row)
-        return segments
+            return list(csv.DictReader(f))
 
     print("[Segments] Creating new 5m segments...")
     segments = []
     segment_id = 1
+
     for road_name, points in ROADS.items():
-        # forward direction
-        for i in range(len(points) - 1):
-            interp = interpolate_points(*points[i], *points[i + 1])
-            for j in range(len(interp) - 1):
-                segments.append({
-                    "segment_id": str(segment_id),
-                    "start_lat": interp[j][0],
-                    "start_lng": interp[j][1],
-                    "end_lat": interp[j+1][0],
-                    "end_lng": interp[j+1][1],
-                })
-                segment_id += 1
-        # reverse direction
-        rev_points = list(reversed(points))
-        for i in range(len(rev_points) - 1):
-            interp = interpolate_points(*rev_points[i], *rev_points[i + 1])
-            for j in range(len(interp) - 1):
-                segments.append({
-                    "segment_id": str(segment_id),
-                    "start_lat": interp[j][0],
-                    "start_lng": interp[j][1],
-                    "end_lat": interp[j+1][0],
-                    "end_lng": interp[j+1][1],
-                })
-                segment_id += 1
+        for direction_points in [points, list(reversed(points))]:
+            for i in range(len(direction_points) - 1):
+                interp = interpolate_points(*direction_points[i], *direction_points[i + 1])
+                for j in range(len(interp) - 1):
+                    segments.append({
+                        "segment_id": str(segment_id),
+                        "start_lat": interp[j][0],
+                        "start_lng": interp[j][1],
+                        "end_lat": interp[j+1][0],
+                        "end_lng": interp[j+1][1],
+                    })
+                    segment_id += 1
 
     SEGMENT_FILE.parent.mkdir(exist_ok=True)
     with open(SEGMENT_FILE, "w", newline="", encoding="utf-8") as f:
@@ -134,11 +116,8 @@ async def scrape_segment(page, seg):
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(3000)
-
             content = await page.inner_text("div[role='main']")
 
-            # extract time
-            import re
             t_match = re.search(r"(\d+\s*h)?\s*(\d+\s*min)?", content)
             d_match = re.search(r"([\d.]+)\s*km", content)
             if t_match and d_match:
@@ -186,8 +165,7 @@ async def main():
         writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
         if not file_exists:
             writer.writeheader()
-        for r in results:
-            writer.writerow(r)
+        writer.writerows(results)
 
     print(f"\nSaved {len(results)} rows → {DATA_FILE}")
 

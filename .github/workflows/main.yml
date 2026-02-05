@@ -1,53 +1,27 @@
-name: Kandy Traffic Scraper
+name: Kandy Traffic Monitor
 
 on:
-  workflow_dispatch:
-  push:
   schedule:
-    - cron: "*/30 * * * *"
-
-permissions:
-  contents: write
+    - cron: '*/10 * * * *' # every 10 minutes
+  workflow_dispatch:
 
 jobs:
-  scrape:
+  monitor:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Install system dependencies
+      - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgl1 libgbm1
-
-      - name: Install Python dependencies
-        run: |
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          pip install playwright
           playwright install chromium
 
-      - name: Run scraper
-        run: python main.py
-
-      - name: Commit data if changed
+      - name: Run Kandy Traffic Monitor
         run: |
-          if [ -f kandy_od_traffic.csv ]; then
-            git status --porcelain
-            if [ -n "$(git status --porcelain)" ]; then
-              git config user.name "github-actions"
-              git config user.email "actions@github.com"
-              git add kandy_od_traffic.csv
-              git commit -m "Update Kandy traffic data"
-              git push
-            else
-              echo "No changes to commit."
-            fi
-          else
-            echo "CSV not found."
-          fi
+          python main.py

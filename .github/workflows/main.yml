@@ -1,7 +1,11 @@
 name: Kandy Traffic Monitor
+
+# Trigger workflow when any file changes in the repo OR manually
 on:
-  schedule:
-    - cron: "*/30 * * * *" # run every 30 minutes
+  push:
+    # Trigger on changes to any file (you can limit to specific paths if needed)
+    paths:
+      - '**/*'
   workflow_dispatch:
 
 jobs:

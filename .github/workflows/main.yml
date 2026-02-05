@@ -1,0 +1,38 @@
+name: Kandy Traffic Intelligence
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: # This allows the index.html button to work
+  schedule:
+    - cron: '*/30 * * * *'
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+
+      - name: Run Scraper
+        run: python main.py
+
+      - name: Update Repository
+        run: |
+          git config --global user.name "KandyBot"
+          git config --global user.email "bot@uom.lk"
+          git add kandy_od_traffic.csv
+          git commit -m "Live Traffic Sync: $(date)" || exit 0
+          git push

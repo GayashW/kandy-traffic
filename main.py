@@ -10,15 +10,14 @@ import math
 import time
 from datetime import datetime
 from pathlib import Path
-import re
 
 from playwright.async_api import async_playwright
-from roads import ROADS  # import your roads.py with 5 roads
+from roads import ROADS  # your roads.py file with 5 roads
 
 # ---------------- CONFIG ----------------
 
 SEGMENT_FILE = Path("segments/kandy_segments.csv")
-SEGMENT_FILE.parent.mkdir(exist_ok=True)
+SEGMENT_FILE.parent.mkdir(parents=True, exist_ok=True)  # ensure folder exists
 
 DATA_FILE = Path("kandy_segment_traffic.csv")
 
@@ -37,12 +36,11 @@ CSV_HEADERS = [
 ]
 
 MAX_RETRIES = 2
-MAX_SEGMENT_DISTANCE_M = 5  # max length per segment
 
 # ---------------- UTILITIES ----------------
 
 def haversine(lat1, lng1, lat2, lng2):
-    """Distance in km between two points"""
+    """Calculate distance in km between two points"""
     R = 6371.0
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
@@ -50,19 +48,25 @@ def haversine(lat1, lng1, lat2, lng2):
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-def interpolate_points(lat1, lng1, lat2, lng2, max_dist_m=MAX_SEGMENT_DISTANCE_M):
-    """Interpolate points so consecutive points are ≤ max_dist_m"""
-    total_dist_m = haversine(lat1, lng1, lat2, lng2) * 1000
-    steps = max(1, int(total_dist_m / max_dist_m))
-    return [(lat1 + (lat2 - lat1) * i / steps, lng1 + (lng2 - lng1) * i / steps) for i in range(steps + 1)]
+def interpolate_points(lat1, lng1, lat2, lng2, max_dist_m=5):
+    """Interpolate points between two coordinates for ≤ max_dist_m"""
+    total_dist = haversine(lat1, lng1, lat2, lng2) * 1000  # meters
+    steps = max(1, int(total_dist / max_dist_m))
+    return [
+        (lat1 + (lat2 - lat1) * i / steps, lng1 + (lng2 - lng1) * i / steps)
+        for i in range(steps + 1)
+    ]
 
 # ---------------- SEGMENTS ----------------
 
 def generate_segments():
-    """Create/load segments CSV (≤5m) for all roads"""
+    """Generate or load road segments (≤5m)"""
+    # ensure folder exists
+    SEGMENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+
     if SEGMENT_FILE.exists():
         print(f"[Segments] Loaded existing segments ({SEGMENT_FILE})")
-        with open(SEGMENT_FILE, "r") as f:
+        with open(SEGMENT_FILE, "r", encoding="utf-8") as f:
             return list(csv.DictReader(f))
 
     print("[Segments] Creating new 5m segments...")
@@ -83,7 +87,6 @@ def generate_segments():
                     })
                     segment_id += 1
 
-    SEGMENT_FILE.parent.mkdir(exist_ok=True)
     with open(SEGMENT_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=segments[0].keys())
         writer.writeheader()
@@ -116,19 +119,24 @@ async def scrape_segment(page, seg):
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(3000)
+
             content = await page.inner_text("div[role='main']")
 
+            import re
             t_match = re.search(r"(\d+\s*h)?\s*(\d+\s*min)?", content)
             d_match = re.search(r"([\d.]+)\s*km", content)
+
             if t_match and d_match:
                 h = int(re.search(r"(\d+)\s*h", t_match.group(0)).group(1)) if re.search(r"(\d+)\s*h", t_match.group(0)) else 0
                 m = int(re.search(r"(\d+)\s*min", t_match.group(0)).group(1)) if re.search(r"(\d+)\s*min", t_match.group(0)) else 0
-                total_min = h*60 + m
+                total_min = h * 60 + m
+
                 result["time_min"] = total_min
                 result["distance_km"] = float(d_match.group(1))
                 if total_min > 0:
                     result["avg_speed_kmh"] = round(result["distance_km"] / (total_min / 60), 2)
                     result["status"] = "success"
+
             break
         except Exception as e:
             if attempt == MAX_RETRIES:
@@ -148,7 +156,9 @@ async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            viewport={"width":1280,"height":800}, locale="en-US", timezone_id="Asia/Colombo"
+            viewport={"width":1280,"height":800},
+            locale="en-US",
+            timezone_id="Asia/Colombo"
         )
         page = await context.new_page()
 

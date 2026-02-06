@@ -55,6 +55,7 @@ def haversine(lat1, lon1, lat2, lon2):
     d_phi = math.radians(lat2 - lat1)
     d_lambda = math.radians(lon2 - lon1)
     a = math.sin(d_phi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(d_lambda/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
 
 def interpolate_segments(lat1, lon1, lat2, lon2, max_len_m=10):
@@ -73,7 +74,9 @@ def interpolate_segments(lat1, lon1, lat2, lon2, max_len_m=10):
 def generate_segments(routes):
     all_segments = []
     for route in routes:
-        segments = interpolate_segments(route["origin"][0], route["origin"][1], route["destination"][0], route["destination"][1], MAX_SEGMENT_LENGTH_M)
+        segments = interpolate_segments(route["origin"][0], route["origin"][1],
+                                        route["destination"][0], route["destination"][1],
+                                        MAX_SEGMENT_LENGTH_M)
         for idx, (olat, olon, dlat, dlon) in enumerate(segments):
             seg_id = f"{route['name'].replace(' ', '_')}_seg_{idx+1}"
             all_segments.append({

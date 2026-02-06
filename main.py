@@ -55,7 +55,7 @@ def haversine(lat1, lon1, lat2, lon2):
     d_phi = math.radians(lat2 - lat1)
     d_lambda = math.radians(lon2 - lon1)
     a = math.sin(d_phi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(d_lambda/2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))  # <-- FIXED c
     return R * c
 
 def interpolate_segments(lat1, lon1, lat2, lon2, max_len_m=10):
@@ -74,9 +74,7 @@ def interpolate_segments(lat1, lon1, lat2, lon2, max_len_m=10):
 def generate_segments(routes):
     all_segments = []
     for route in routes:
-        segments = interpolate_segments(route["origin"][0], route["origin"][1],
-                                        route["destination"][0], route["destination"][1],
-                                        MAX_SEGMENT_LENGTH_M)
+        segments = interpolate_segments(route["origin"][0], route["origin"][1], route["destination"][0], route["destination"][1], MAX_SEGMENT_LENGTH_M)
         for idx, (olat, olon, dlat, dlon) in enumerate(segments):
             seg_id = f"{route['name'].replace(' ', '_')}_seg_{idx+1}"
             all_segments.append({
@@ -89,6 +87,10 @@ def generate_segments(routes):
                 "distance_m": round(haversine(olat, olon, dlat, dlon), 2),
             })
     return all_segments
+
+# ---------------- MAIN ----------------
+
+print("[INFO] main.py started")
 
 # Save or load segments
 if not SEGMENTS_FILE.exists():
@@ -121,7 +123,8 @@ async def handle_consent(page):
 
 async def scrape_segment(page, segment):
     start_time = time.time()
-    result = {
+    result = {key: None for key in CSV_HEADERS}
+    result.update({
         "timestamp_utc": datetime.utcnow().isoformat(),
         "segment_id": segment["segment_id"],
         "od_pair": segment["od_pair"],
@@ -130,14 +133,9 @@ async def scrape_segment(page, segment):
         "destination_lat": segment["destination_lat"],
         "destination_lng": segment["destination_lng"],
         "distance_m": segment["distance_m"],
-        "driving_min": None,
-        "walking_min": None,
-        "bicycling_min": None,
-        "transit_min": None,
-        "two_wheeler_min": None,
         "process_time_sec": 0,
         "status": "failed",
-    }
+    })
 
     url = f"https://www.google.com/maps/dir/{segment['origin_lat']},{segment['origin_lng']}/{segment['destination_lat']},{segment['destination_lng']}/"
 
@@ -191,8 +189,6 @@ async def scrape_segment(page, segment):
     result["process_time_sec"] = round(time.time() - start_time, 2)
     return result
 
-# ---------------- MAIN ----------------
-
 async def main():
     results = []
 
@@ -200,6 +196,7 @@ async def main():
         browser = await p.chromium.launch(headless=True, args=[
             "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"
         ])
+        print("[INFO] Chromium launched successfully")
         context = await browser.new_context(viewport={"width":1280,"height":800}, locale="en-US", timezone_id="Asia/Colombo")
         page = await context.new_page()
 

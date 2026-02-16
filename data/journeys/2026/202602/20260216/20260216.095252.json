@@ -1,0 +1,49 @@
+{
+  "timestamp_utc": "2026-02-16T09:52:52.350024",
+  "routes": {
+    "Peradeniya-to-KMTT": [
+      {
+        "segment_index": 1,
+        "status": "failed: timeout"
+      },
+      {
+        "segment_index": 2,
+        "status": "failed: timeout"
+      },
+      {
+        "segment_index": 3,
+        "status": "failed: timeout"
+      },
+      {
+        "segment_index": 4,
+        "status": "failed: timeout"
+      },
+      {
+        "segment_index": 5,
+        "status": "failed: timeout"
+      }
+    ],
+    "Temple-to-Railway": [
+      {
+        "segment_index": 1,
+        "status": "failed: timeout"
+      },
+      {
+        "segment_index": 2,
+        "status": "failed: timeout"
+      },
+      {
+        "segment_index": 3,
+        "status": "failed: timeout"
+      },
+      {
+        "segment_index": 4,
+        "status": "failed: timeout"
+      },
+      {
+        "segment_index": 5,
+        "status": "failed: timeout"
+      }
+    ]
+  }
+}
